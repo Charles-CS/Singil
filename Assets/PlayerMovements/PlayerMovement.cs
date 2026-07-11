@@ -5,13 +5,23 @@ using UnityEngine.InputSystem;
 public class PlayerMovement : MonoBehaviour
 {
     [Header("Movement Settings")]
-    public float walkSpeed = 5f;
-    public float sprintSpeed = 10f;
+    public float walkSpeed = 3.5f;      // Deliberate and weighted, never hurried
+    public float sprintSpeed = 5.5f;    // Minor speed boost (outdoors only)
     
     [Header("Look Settings")]
     public float mouseSensitivity = 0.2f;
     [Range(1f, 50f)]
     public float lookSmoothness = 15f;
+
+    [Header("Interaction Settings")]
+    public float interactionRange = 2.5f;
+    public LayerMask interactableLayer = ~0; // Default: all layers
+
+    [Header("Control State")]
+    public bool controlsLocked = false;  // When true, all input is ignored
+    public bool sprintDisabled = false;  // When true, Shift does nothing
+    public bool isInInterior = false;    // Set by trigger zones — disables sprint indoors
+    public bool interactionEnabled = true; // Can be disabled during certain phases
 
     private float currentSpeed;
     private float verticalRotation = 0f;
@@ -23,6 +33,14 @@ public class PlayerMovement : MonoBehaviour
     private Camera playerCamera;
     private CharacterController characterController;
     private Vector3 verticalVelocity;
+
+    // Interaction
+    private InteractableObject currentLookTarget;
+    private UIPromptManager interactionPromptManager;
+    private LedgerUI ledgerUI;
+
+    // Event for other systems to hook into
+    public System.Action<InteractableObject> OnObjectExamined;
 
     void Start()
     {
@@ -42,13 +60,76 @@ public class PlayerMovement : MonoBehaviour
         // Initialize rotations based on current transform
         horizontalRotation = transform.eulerAngles.y;
         currentHorizontalRotation = horizontalRotation;
+
+        // Find UI references
+        interactionPromptManager = FindAnyObjectByType<UIPromptManager>();
+        ledgerUI = FindAnyObjectByType<LedgerUI>();
     }
 
     void Update()
     {
-        HandleLook();
-        HandleMovement();
+        // If ledger is open, only handle Tab to close
+        if (ledgerUI != null && ledgerUI.IsOpen)
+        {
+            return; // Ledger handles its own Tab input
+        }
+
+        if (!controlsLocked)
+        {
+            HandleLook();
+            HandleMovement();
+        }
+
+        if (interactionEnabled && !controlsLocked)
+        {
+            HandleInteractionRaycast();
+            HandleInteractionInput();
+        }
     }
+
+    // === PUBLIC API FOR GAME SYSTEMS ===
+
+    /// <summary>
+    /// Lock all player controls (movement + look). Used during cinematics and scripted sequences.
+    /// </summary>
+    public void LockControls()
+    {
+        controlsLocked = true;
+    }
+
+    /// <summary>
+    /// Unlock player controls.
+    /// </summary>
+    public void UnlockControls()
+    {
+        controlsLocked = false;
+    }
+
+    /// <summary>
+    /// Enable or disable sprint. Sprint is disabled in interiors.
+    /// </summary>
+    public void SetSprintEnabled(bool enabled)
+    {
+        sprintDisabled = !enabled;
+    }
+
+    /// <summary>
+    /// Set interior state. Called by trigger zones at door transitions.
+    /// </summary>
+    public void SetInterior(bool interior)
+    {
+        isInInterior = interior;
+    }
+
+    /// <summary>
+    /// Enable or disable interaction (E key).
+    /// </summary>
+    public void SetInteractionEnabled(bool enabled)
+    {
+        interactionEnabled = enabled;
+    }
+
+    // === MOVEMENT ===
 
     private void HandleMovement()
     {
@@ -59,7 +140,8 @@ public class PlayerMovement : MonoBehaviour
         // Use the New Input System (Keyboard)
         if (Keyboard.current != null)
         {
-            isSprinting = Keyboard.current.shiftKey.isPressed;
+            // Sprint only if not disabled and not in interior
+            isSprinting = Keyboard.current.shiftKey.isPressed && !sprintDisabled && !isInInterior;
             
             if (Keyboard.current.wKey.isPressed || Keyboard.current.upArrowKey.isPressed) moveVertical += 1f;
             if (Keyboard.current.sKey.isPressed || Keyboard.current.downArrowKey.isPressed) moveVertical -= 1f;
@@ -89,6 +171,8 @@ public class PlayerMovement : MonoBehaviour
         Vector3 finalMovement = (move * currentSpeed) + verticalVelocity;
         characterController.Move(finalMovement * Time.deltaTime);
     }
+
+    // === CAMERA LOOK ===
 
     private void HandleLook()
     {
@@ -129,4 +213,73 @@ public class PlayerMovement : MonoBehaviour
             playerCamera.transform.localRotation = Quaternion.Euler(currentVerticalRotation, 0f, 0f);
         }
     }
+
+    // === INTERACTION SYSTEM ===
+
+    /// <summary>
+    /// Raycast from camera center to detect interactable objects.
+    /// </summary>
+    private void HandleInteractionRaycast()
+    {
+        if (playerCamera == null) return;
+
+        Ray ray = new Ray(playerCamera.transform.position, playerCamera.transform.forward);
+        RaycastHit hit;
+
+        InteractableObject newTarget = null;
+
+        if (Physics.Raycast(ray, out hit, interactionRange, interactableLayer))
+        {
+            newTarget = hit.collider.GetComponent<InteractableObject>();
+            if (newTarget == null)
+                newTarget = hit.collider.GetComponentInParent<InteractableObject>();
+        }
+
+        // Update highlight state
+        if (currentLookTarget != newTarget)
+        {
+            // Remove highlight from old target
+            if (currentLookTarget != null)
+            {
+                currentLookTarget.SetHighlight(false);
+            }
+
+            currentLookTarget = newTarget;
+
+            // Add highlight to new target
+            if (currentLookTarget != null && currentLookTarget.isInteractable)
+            {
+                currentLookTarget.SetHighlight(true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Handle E key press for examining/interacting with objects.
+    /// </summary>
+    private void HandleInteractionInput()
+    {
+        if (Keyboard.current == null) return;
+
+        if (Keyboard.current.eKey.wasPressedThisFrame && currentLookTarget != null && currentLookTarget.isInteractable)
+        {
+            string result = currentLookTarget.Examine();
+
+            if (!string.IsNullOrEmpty(result))
+            {
+                // Show examine text as a prompt
+                if (interactionPromptManager != null)
+                {
+                    interactionPromptManager.ShowPrompt(result, 4f);
+                }
+            }
+
+            // Fire event for other systems
+            OnObjectExamined?.Invoke(currentLookTarget);
+        }
+    }
+
+    // Note: Interior zone detection is handled by the InteriorZone component,
+    // which calls SetInterior() directly on this script.
+    // Room-specific triggers are handled by TriggerZone → GamePhaseManager.
 }
