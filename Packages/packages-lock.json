@@ -242,6 +242,15 @@
       },
       "url": "https://packages.unity.com"
     },
+    "org.christowm.unity.mcp": {
+      "version": "https://github.com/mitchchristow/unity-mcp.git?path=/Packages/org.christowm.unity.mcp",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.unity.nuget.newtonsoft-json": "3.2.1"
+      },
+      "hash": "da5468d2c7f5a26bcd1b63783f6fab7cf65a731c"
+    },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",
       "depth": 0,
